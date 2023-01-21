@@ -21,7 +21,8 @@ async def cycle() -> ([Record],):
         # get initial data from db
         pairs_flat = await pool.fetch('SELECT id, coin_id, cur_id, sell FROM pair')  # WHERE ex_id = 1
         pts_flat = await pool.fetch('SELECT name, cur_id FROM pt INNER JOIN ptc pc on name = pt_id WHERE rank >= 0 ORDER BY rank DESC')
-        fiats_flat = await pool.fetch('SELECT fiat_id, pt_id, cur_id, amount, target-amount as need FROM fiat INNER JOIN fcr f on fiat.id = f.fiat_id WHERE amount >= 0 and NOT blocked ORDER BY need DESC')
+        fiats_flat = await pool.fetch('SELECT fiat.id, pt_id, cur_id, amount, target-amount as need FROM fiat INNER JOIN ptc on fiat.ptc_id = ptc.id WHERE amount >= 0 and NOT blocked ORDER BY need DESC')
+        # users_flat = await pool.fetch('SELECT fiat.id, pt_id, cur_id, amount, target-amount as need FROM fiat INNER JOIN ptc on fiat.ptc_id = ptc.id WHERE amount >= 0 and NOT blocked ORDER BY need DESC')
 
         # data transform
         pairs, pts, fiats = [{}, {}], {}, {}
@@ -31,7 +32,7 @@ async def cycle() -> ([Record],):
             tt = int(pair['sell'])
             pairs[tt][pair['cur_id']] = pairs[tt].get(pair['cur_id'], []) + [(pair['coin_id'], pair['id'])]
         for fiat in fiats_flat:
-            fiats[fiat['cur_id']] = fiats.get(fiat['cur_id'], []) + [(fiat['pt_id'], fiat['fiat_id'], fiat['need'], fiat['amount'])]
+            fiats[fiat['cur_id']] = fiats.get(fiat['cur_id'], []) + [(fiat['pt_id'], fiat['id'], fiat['need'], fiat['amount'])]
 
         # data containers
         new_ads, tasks, bd = {}, [], {"page": 1, "rows": 2}
@@ -49,7 +50,7 @@ async def cycle() -> ([Record],):
                     print(f'Only for', res)
 
         # async getting ads from c2c.binance.com
-        async with AsyncConnectionPool(max_connections=14) as http:  # http2=True
+        async with AsyncConnectionPool(max_connections=2) as http:  # http2=True
             for is_sell in 0, 1:
                 bd.update({"tradeType": "SELL" if is_sell else "BUY"})
                 for cur, coins in pairs[is_sell].items():
@@ -67,11 +68,11 @@ async def cycle() -> ([Record],):
             print(olc-inc, 'pairs missed:', str(set(range(1, olc+1))-set(new_ads.keys())))
 
         # transform input data from c2c.binance to sql insert list of tuples
-        insert_data = [(new_ad.id, new_ad.pair_id, new_ad.price, new_ad.minFiat, new_ad.maxFiat) for new_ad in new_ads.values()]
+        insert_data = [(new_ad.id, new_ad.pair_id, new_ad.price, new_ad.minFiat, new_ad.maxFiat, 0) for new_ad in new_ads.values()]
         # sql execute
         upd_sql: str = '''
-        INSERT INTO ad (id, pair_id, price, "minFiat", "maxFiat")
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO ad (id, pair_id, price, "minFiat", "maxFiat", status)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (id) DO UPDATE 
         SET price = excluded.price, "maxFiat" = excluded."maxFiat", updated_at = now();'''
         await pool.executemany(upd_sql, insert_data)
